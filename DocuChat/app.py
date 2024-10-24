@@ -4,6 +4,7 @@ from langchain_community.document_loaders import (
     Docx2txtLoader,
     CSVLoader
 )
+import json
 from langchain.chains import RetrievalQA
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import FAISS
@@ -17,6 +18,8 @@ import pandas as pd
 import zipfile
 import base64
 
+GROQ_API_KEY = "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"
+os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 
 st.set_page_config(layout="wide")
 
@@ -39,7 +42,9 @@ if 'user_name' not in st.session_state:
 @st.cache_resource
 def initialize_firebase():
     if not firebase_admin._apps:
-        cred = credentials.Certificate("/content/drive/MyDrive/Colab Notebooks/DocChat/document-chatbot-generat-bf086-firebase-adminsdk-5vesf-fec868f7e2.json")
+        firebase_creds_str = st.secrets["FIREBASE_CREDENTIALS"]
+        firebase_creds = json.loads(firebase_creds_str)
+        cred = credentials.Certificate(firebase_creds)
         firebase_admin.initialize_app(cred, {
             'storageBucket': 'document-chatbot-generat-bf086.appspot.com'
         })
@@ -80,27 +85,28 @@ def clean_directory(directory):
                 st.warning(f"Failed to remove {item_path}: {e}")
 
 def load_document(file_path):
-    """Load document based on file extension"""
+    """Load document based on file extension with improved PDF handling"""
     file_extension = os.path.splitext(file_path)[1].lower()
     
     try:
         if file_extension == '.pdf':
-            loader = UnstructuredPDFLoader(file_path)
+            from langchain_community.document_loaders import PyPDFLoader
+            loader = PyPDFLoader(file_path)
             return loader.load()
         
         elif file_extension == '.docx':
             loader = Docx2txtLoader(file_path)
             return loader.load()
         
-        elif file_extension == '.csv':
-            df = pd.read_csv(file_path)
-            text_content = []
-            for index, row in df.iterrows():
-                row_text = f"Row {index + 1}:\n"
-                for column in df.columns:
-                    row_text += f"{column}: {row[column]}\n"
-                text_content.append({"page_content": row_text, "metadata": {"source": file_path}})
-            return text_content
+        #elif file_extension == '.csv':
+        #    df = pd.read_csv(file_path)
+        #    text_content = []
+        #    for index, row in df.iterrows():
+        #        row_text = f"Row {index + 1}:\n"
+        #        for column in df.columns:
+        #            row_text += f"{column}: {row[column]}\n"
+        #        text_content.append({"page_content": row_text, "metadata": {"source": file_path}})
+        #    return text_content
         
         else:
             raise ValueError(f"Unsupported file type: {file_extension}")
@@ -122,60 +128,66 @@ def save_vectorstore():
 def create_standalone_chatbot():
     """Create a standalone chatbot script"""
     standalone_code = '''
-import streamlit as st
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain_groq import ChatGroq
+import os
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.vectorstores import FAISS
+from langchain_groq import ChatGroq
 from langchain.chains import RetrievalQA
 
-# Initialize the chatbot
-@st.cache_resource
-def initialize_chatbot():
+# Configure your Groq API key
+GROQ_API_KEY = "Your-own-API-KEY-here"
+os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 
-    GROQ_API_KEY = "<Your-API-KEY-here>"
-    os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 
-    # Load the saved vectorstore
-    embeddings = HuggingFaceEmbeddings()
-    vectorstore = FAISS.load_local("vectorstore", embeddings)
-    
-    # Initialize LLM
-    llm = ChatGroq(
-        model="llama-3.1-8b-instant",
-        temperature=0
-    )
-    
-    # Create QA chain
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=vectorstore.as_retriever(),
-        return_source_documents=True
-    )
-    
-    return qa_chain
+embedding = HuggingFaceEmbeddings()
 
-# Main UI
-st.title("Document Chatbot")
 
-# Initialize the chatbot
-qa_chain = initialize_chatbot()
+vectorstore_path = "vectorstore"  
+vectorstore = FAISS.load_local(
+    vectorstore_path,
+    embedding,
+    allow_dangerous_deserialization=True  
+)
 
-# Chat interface
-query = st.text_input("Ask your question:")
 
-if st.button("Ask", disabled=not query):
-    if query:
+llm = ChatGroq(
+    model="llama-3.1-8b-instant",
+    temperature=0
+)
+
+qa_chain = RetrievalQA.from_chain_type(
+    llm=llm,
+    chain_type="stuff",
+    retriever=vectorstore.as_retriever(),
+    return_source_documents=True
+)
+
+
+def user_query(query):
+    """Process a user query and return the answer"""
+    response = qa_chain.invoke({"query": query})
+    return response["result"]
+
+
+def main():
+    print("Document Chatbot initialized. Type 'quit' to exit.")
+    while True:
+        query = input("\nASK YOUR QUESTION: ")
+        if query.lower() == 'quit':
+            break
+
         try:
-            with st.spinner("Generating answer..."):
-                response = qa_chain.invoke({"query": query})
-                answer = response.get("result", "No response generated.")
-                st.write("### Answer")
-                st.write(answer)
+            answer = user_query(query)
+            print("\nANSWER:")
+            print(answer)
+            print("\n" + "-" * 50)
         except Exception as e:
-            st.error(f"Error generating response: {str(e)}")
-    else:
-        st.warning("Please enter a question.")
+            print(f"Error processing query: {e}")
+
+
+if __name__ == "__main__":
+    main()
+
 '''
     
     script_path = os.path.join(output_directory, "chatbot.py")
@@ -186,10 +198,6 @@ if st.button("Ask", disabled=not query):
 def create_requirements_file():
     """Create requirements.txt file"""
     requirements = '''
-streamlit
-langchain
-faiss-cpu
-sentence-transformers
 langchain-community==0.2.15
 langchain-chroma==0.1.3
 langchain-text-splitters==0.2.2
@@ -197,7 +205,9 @@ langchain-huggingface==0.0.3
 langchain-groq==0.1.9
 unstructured==0.15.0
 unstructured[pdf]==0.15.0
+faiss-cpu
 nltk==3.8.1
+
 '''
     requirements_path = os.path.join(output_directory, "requirements.txt")
     with open(requirements_path, "w") as f:
@@ -228,11 +238,6 @@ def create_downloadable_package():
    ```
 
 3. add your own groq API KEY in the code.
-
-4. Run the chatbot:
-   ```
-   streamlit run chatbot.py
-   ```
 
 '''
         readme_path = os.path.join(output_directory, "README.md")
@@ -330,7 +335,7 @@ def upload_to_firebase(file_path, file_name, user_name):
 # Main UI
 if not st.session_state.user_name:
     st.session_state.user_name = st.text_input("Please enter your name:")
-    if st.button("Submit", disabled=not st.session_state.user_name):
+    if st.button("Submit"):
         if not st.session_state.user_name:
             st.warning("Please enter your name")
         if st.session_state.user_name:
@@ -343,7 +348,7 @@ else:
 
     uploaded_files = st.sidebar.file_uploader(
         "Choose files",
-        type=['pdf', 'docx', 'csv'],
+        type=['pdf', 'docx'],
         accept_multiple_files=True
     )
 
@@ -379,7 +384,7 @@ else:
             st.error("Failed to process documents. Please check the errors above.")
 
     # Main chat interface
-    st.title("Document Chatbot")
+    st.title("DocuChat - Multi-Document Chatbot Generator")
 
     # Create two columns for chat and download section
     chat_col, download_col = st.columns([2, 1])
