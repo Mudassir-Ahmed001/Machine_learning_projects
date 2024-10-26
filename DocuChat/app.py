@@ -18,7 +18,7 @@ import pandas as pd
 import zipfile
 import base64
 
-GROQ_API_KEY = "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"
+GROQ_API_KEY = "<your-API-KEY-here>"
 os.environ["GROQ_API_KEY"] = GROQ_API_KEY
 
 st.set_page_config(layout="wide")
